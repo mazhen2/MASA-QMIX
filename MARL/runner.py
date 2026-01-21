@@ -5,6 +5,7 @@ from MARL.agent.agent import Agents, CommAgents
 from MARL.common.replay_buffer import ReplayBuffer
 import matplotlib.pyplot as plt
 import sys
+from MARL.common import plot_utils
 
 
 class Runner:
@@ -32,12 +33,19 @@ class Runner:
         train_steps = 0
         for_gantt_data =[]
         # print('Run {} start'.format(num))
+        # estimate total train steps to show progress (mixer vs on-policy)
+        is_on_policy = (self.args.alg.find('coma') > -1 or self.args.alg.find('central_v') > -1 or self.args.alg.find('reinforce') > -1)
+        estimated_total_train_steps = self.args.n_epoch * (1 if is_on_policy else max(1, self.args.train_steps))
         r_s = [0]
         for epoch in range(self.args.n_epoch):
-            # 显示输出
-
-            text = '\rRun {}, train epoch {}, ave_rewards {}'
-            sys.stdout.write(text.format(num, epoch, sum(r_s)/len(r_s)))
+            # 显示输出（带总进度）
+            text = '\rRun {run_id}, epoch {cur_epoch}/{total_epoch}, train_step {train_step}/{total_steps}, ave_rewards {ave:.3f}'
+            sys.stdout.write(text.format(run_id=num,
+                                         cur_epoch=epoch + 1,
+                                         total_epoch=self.args.n_epoch,
+                                         train_step=train_steps,
+                                         total_steps=estimated_total_train_steps,
+                                         ave=(sum(r_s) / len(r_s))))
             sys.stdout.flush()
 
             # print('Run {}, train epoch {}'.format(num, epoch), flush=False)
@@ -77,8 +85,22 @@ class Runner:
                     self.agents.train(mini_batch, train_steps)
                     train_steps += 1
 
-        # self.plt(num)
+        # save training curves and data
+        try:
+            self.plt(num)
+            print("Training curves and numpy arrays saved to:", self.save_path)
+        except Exception as e:
+            print("Failed to save training curves:", e)
 
+        # try to generate and save Gantt chart (best-effort)
+        try:
+            out_gantt = plot_utils.generate_and_save_gantt(self.save_path, out_filename="gantt.png")
+            print("Gantt chart saved to:", out_gantt)
+        except FileNotFoundError as e:
+            # no scheduling records found
+            print("No scheduling records found to generate Gantt chart:", e)
+        except Exception as e:
+            print("Failed to generate Gantt chart:", e)
     def evaluate(self):
         win_number = 0
         episode_rewards = 0

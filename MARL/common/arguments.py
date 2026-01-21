@@ -57,16 +57,17 @@ def get_mixer_args(args):
     args.epsilon_anneal_scale = 'step'
 
     # the number of the epoch to train the agent
-    args.n_epoch = 15000
+    # Quick-verify (short-run) defaults per request:
+    args.n_epoch = 10
 
     # the number of the episodes in one epoch
-    args.n_episodes = 5
+    args.n_episodes = 3
 
     # the number of the train steps in one epoch
-    args.train_steps = 2
+    args.train_steps = 1
 
     # # how often to evaluate
-    args.evaluate_cycle = 50
+    args.evaluate_cycle = 1
 
     # experience replay
     args.batch_size = 32
