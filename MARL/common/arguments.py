@@ -1,9 +1,16 @@
+"""
+MARL算法参数配置
+
+该模块定义了各种MARL算法的超参数配置。
+支持QMIX、VDN、COMA、QTRAN等多种算法的参数设置。
+
+支持的算法组合：
+- 基础算法：vdn, coma, central_v, qmix, qtran_base, qtran_alt, reinforce, maven
+- 通信增强：coma+commnet, central_v+commnet, reinforce+commnet
+- 图网络增强：coma+g2anet, central_v+g2anet, reinforce+g2anet
+"""
+
 import argparse
-
-"""
-Here are the param for the training
-
-"""
 
 
 def get_common_args():

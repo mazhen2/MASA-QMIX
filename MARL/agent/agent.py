@@ -1,3 +1,18 @@
+"""
+多智能体强化学习智能体管理
+
+该模块实现了多种MARL算法的智能体封装，包括：
+- VDN (Value Decomposition Network)
+- QMIX (Q-value Mixing Network)
+- COMA (Counterfactual Multi-Agent Policy Gradients)
+- QTRAN (Q-Transformation)
+- MAVEN (Multi-Agent Variational Exploration)
+- Central V (Centralized Value function)
+- Reinforce (Policy Gradient)
+
+支持有通信和无通信两种模式的智能体。
+"""
+
 import numpy as np
 import torch
 from MARL.policy.vdn import VDN
@@ -11,8 +26,12 @@ from MARL.policy.maven import MAVEN
 from torch.distributions import Categorical
 
 
-# Agent no communication
 class Agents:
+    """
+    标准多智能体集合（无通信）
+
+    管理多个智能体的策略学习和执行，根据指定的算法初始化对应的策略网络。
+    """
     def __init__(self, args):
         self.n_actions = args.n_actions
         self.n_agents = args.n_agents

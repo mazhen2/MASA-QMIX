@@ -1,40 +1,72 @@
-'''
-里面的plane就是job，战位（站位）就是site
-'''
-from utils.site import Sites
-from utils.job import Jobs
-from utils.task import Task
-from utils.plane import Planes
-from utils import util
+"""
+船只调度环境 (Boat Schedule Environment)
+
+该环境模拟了船只保障任务的调度问题，是一个多智能体强化学习环境。
+在这里：
+- plane（飞机）对应job（作业任务）
+- site（站位）对应machine/workstation（工作站）
+
+环境基于OpenAI Gym框架实现，支持多智能体的协同调度决策。
+"""
+
+from utils.site import Sites      # 站位管理类
+from utils.job import Jobs        # 作业管理类
+from utils.task import Task       # 任务管理类
+from utils.plane import Planes    # 飞机管理类
+from utils import util            # 工具函数
 import numpy as np
 import gym
 from gym import spaces
 from gym.utils import seeding
 import math
-# 整个环境类
+
+
 class ScheduleEnv(gym.Env):
+    """
+    船只调度环境类
+
+    继承自OpenAI Gym的Env类，实现多智能体船只调度问题的环境模拟。
+    智能体需要协作决定如何分配船只到不同的保障站位，以最小化总完成时间。
+    """
     environment_name = "Boat Schedule"
 
     def __init__(self):
-        # 类变量的声明
-        self.sites = []
-        self.jobs = []
-        self.task = []
-        self.planes_obj = Planes()
-        self.planes = []
-        self.state = [[]]
-        self.done = False
-        self.state_left_time = []
-        self.episode_time_slice = []  # 每个step消耗时间组成的episode的时间列表
-        self.plane_speed = 0  # 运行速度
-        self.initialize()  # 初始化参数
-        # 参与dqn决策的plane不需要等待动作，一定会选择一个合适的动作
-        # 0-17 代表下一步前往的战位， 18代表由于资源冲突需要等待，19代表处于正忙（加工）动作，20代表已经完成了动作，19、20均不参与训练
-        self.action_space = spaces.Discrete(len(self.sites)+3)  # 此时已经初始化完成了，多一维表示什么也不做
+        """
+        初始化船只调度环境
+
+        设置环境的基本参数、状态变量和动作空间。
+        """
+        # 环境组件初始化
+        self.sites = []        # 站位列表
+        self.jobs = []         # 作业列表
+        self.task = []         # 任务序列
+        self.planes_obj = Planes()  # 飞机对象管理器
+        self.planes = []       # 飞机列表
+
+        # 环境状态变量
+        self.state = [[]]      # 当前环境状态
+        self.done = False      # episode结束标志
+        self.state_left_time = []     # 各站位剩余处理时间
+        self.episode_time_slice = []  # 每个step消耗的时间序列
+        self.plane_speed = 0   # 飞机飞行速度
+
+        # 初始化环境参数
+        self.initialize()
+
+        # 动作空间定义：
+        # 0-17: 前往指定站位 (len(self.sites)-1 = 17)
+        # 18: 由于资源冲突需要等待
+        # 19: 处于正忙（加工）动作
+        # 20: 已经完成了动作
+        # 注：19、20状态不参与训练决策
+        self.action_space = spaces.Discrete(len(self.sites) + 3)  # 离散动作空间
+
+        # 环境标识
         self.id = "Boat Schedule"
-        # 下面两个参数还不知道什么意思
-        self.reward_threshold = -1000
-        self.trials = 50  # 这个就类似于steps
+
+        # 环境参数（用于Gym兼容性）
+        self.reward_threshold = -1000  # 奖励阈值
+        self.trials = 50               # 类似于最大步数
 
         self.job_record_for_gant = []  # 用于存储调度中间过程四元组
 
@@ -45,62 +77,88 @@ class ScheduleEnv(gym.Env):
         self.obs4marl = None
 
     def initialize(self):
+        """
+        初始化环境的所有组件和状态变量
+
+        创建站位、作业、任务和飞机的实例，并设置初始状态。
+        """
+        # 创建环境组件对象
         sites_obj = Sites()
         self.sites_obj = sites_obj
         jobs_obj = Jobs()
         task_obj = Task()
         self.planes_obj = Planes()
-        self.sites = sites_obj.sites_object_list
-        self.jobs = jobs_obj.jobs_object_list
-        # 任务，里面是任务的序列
-        self.task = task_obj.simple_task_object
 
-        self.planes = self.planes_obj.planes_object_list
+        # 获取组件列表
+        self.sites = sites_obj.sites_object_list    # 站位对象列表
+        self.jobs = jobs_obj.jobs_object_list       # 作业对象列表
+        self.task = task_obj.simple_task_object     # 任务序列
+        self.planes = self.planes_obj.planes_object_list  # 飞机对象列表
 
-        self.state = [[9, [1 if j in self.sites[i].resource_ids_list else 0 for j in range(9)]] for i in range(len(self.sites))]
+        # 初始化环境状态
+        # 状态格式：[当前占用飞机ID, 资源可用性向量]
+        # 9表示空闲，资源向量表示该站位能处理的作业类型（1=能处理，0=不能处理）
+        self.state = [[9, [1 if j in self.sites[i].resource_ids_list else 0 for j in range(9)]]
+                      for i in range(len(self.sites))]
 
-        self.sites_state_global = [-1 for i in range(len(self.sites))] # -1代表没有被安排保障任务
+        # 全局站位状态：-1表示未被安排保障任务
+        self.sites_state_global = [-1 for i in range(len(self.sites))]
 
-        self.job_record_for_gant = []  # 用于存储调度中间过程四元组
+        # 用于记录甘特图数据的四元组：(开始时间, 作业ID, 站位ID, 飞机ID)
+        self.job_record_for_gant = []
 
-
+        # 重置环境控制变量
         self.done = False
-        self.state_left_time = np.array([0 for i in range(len(self.sites))])
-        self.episode_time_slice = []
-        self.plane_speed = self.planes_obj.plane_speed  # 运行速度
-        # print("the environment is initialized now !!")
-        self.obs4marl = [[] for i in range(len(self.planes))]
-        self.current_finishing_jobs = 0
-        self.step_count = 0
+        self.state_left_time = np.array([0 for i in range(len(self.sites))])  # 各站位剩余处理时间
+        self.episode_time_slice = []    # 记录每个step的时间消耗
+        self.plane_speed = self.planes_obj.plane_speed  # 飞机飞行速度
+
+        # MARL相关变量初始化
+        self.obs4marl = [[] for i in range(len(self.planes))]  # 各智能体的观测
+        self.current_finishing_jobs = 0  # 当前已完成作业数
+        self.step_count = 0              # 当前step计数
 
     def seed(self, seed=None):
         self.np_random, seed = seeding.np_random(seed)
         return [seed]
 
     def reset(self):
-        self.initialize()  # 初始化参数
+        """
+        重置环境到初始状态
+
+        返回：
+            state: 全局状态向量，用于MARL算法
+        """
+        self.initialize()  # 重新初始化所有参数
+
+        # 构造状态信息字典
         info = {
-            "sites": [[self.sites[i].absolute_position,
-                       self.state[i][0],
-                       self.state[i][1]
+            "sites": [[self.sites[i].absolute_position,    # 站位绝对位置
+                       self.state[i][0],                   # 当前占用飞机ID
+                       self.state[i][1]                    # 资源可用性向量
                        ] for i in range(len(self.sites))],
-            "planes": [[self.planes[i].left_job[0].index_id,
-                        self.jobs[self.planes[i].left_job[0].index_id].time_span,
-                        len(self.planes[i].left_job)
+            "planes": [[self.planes[i].left_job[0].index_id,                    # 当前作业ID
+                        self.jobs[self.planes[i].left_job[0].index_id].time_span, # 作业处理时间
+                        len(self.planes[i].left_job)                            # 剩余作业数量
                         ] if len(self.planes[i].left_job) != 0
-                       else [
-                9,
-                0,
-                len(self.planes[i].left_job)
-            ] for i in range(len(self.planes))],
+                       else [9, 0, len(self.planes[i].left_job)]  # 空闲状态
+                       for i in range(len(self.planes))],
             "planes_obj": self.planes
         }
-        state = self.conduct_state(info)
-        # print(info)
-        # print(len(state))
-        return state  # 151
+
+        state = self.conduct_state(info)  # 构造全局状态向量
+        return state
 
     def conduct_state(self, info):
+        """
+        构造全局状态向量和局部观测
+
+        Args:
+            info: 包含sites和planes信息的字典
+
+        Returns:
+            numpy.array: 全局状态向量
+        """
         res = []
         temp = []
 
@@ -181,17 +239,27 @@ class ScheduleEnv(gym.Env):
         return res, real_conflict_num
 
     def step(self, action):
+        """
+        执行一步环境交互
+
+        Args:
+            action: 所有智能体的动作列表
+
+        Returns:
+            tuple: (reward, done, info)
+        """
         self.step_count += 1
-        # print("开始交互了")
-        action, real_conflict_num = self.action_replace(action) # 将action中的20换成18
-        # if real_conflict_num != 0:
-        #     print(real_conflict_num)
-        count_break_rules = 0
-        # print(action)
-        assert len(action) == len(self.planes)
-        rewards = [0 for eve in action]
-        max_time_on_roads = [0 for eve in action]
-        count_for_reward = 0
+
+        # 预处理动作：将无效动作(20)替换为等待动作(18)
+        action, real_conflict_num = self.action_replace(action)
+
+        # 初始化变量
+        count_break_rules = 0  # 规则违反计数
+        assert len(action) == len(self.planes)  # 确保动作数量与智能体数量匹配
+
+        rewards = [0 for eve in action]           # 各智能体的奖励
+        max_time_on_roads = [0 for eve in action] # 各智能体的最大路途时间
+        count_for_reward = 0                      # 用于奖励计算的计数
         action = self.check_inflict_action(action)
         time_span_increase = np.array([0 for eve in self.sites])
         for i, site_id in enumerate(action):
@@ -307,23 +375,34 @@ class ScheduleEnv(gym.Env):
                                    }
 
     def get_avail_agent_actions(self, agent_id):
-        # 检查飞机是否处于正忙状态
+        """
+        获取指定智能体的可用动作
+
+        Args:
+            agent_id: 智能体ID
+
+        Returns:
+            list: 可用动作掩码，1表示可用，0表示不可用
+                 格式：[站位动作(0-17), 等待(18), 忙碌(19), 完成(20)]
+        """
+        # 检查飞机是否处于正忙状态（正在加工）
         for eve in self.state:
-            if agent_id == eve[0]:  # 代表此飞机还在处于加工状态
-                # return [0 for i in range(18)] + [1]  # 1
-                return [0 for i in range(18)] + [0, 1, 0]
-        # 如果飞机准备进行下一步操作则执行下部分程序
-        res = [0 for eve in self.sites_state_global]
+            if agent_id == eve[0]:  # 该飞机正在某站位工作
+                return [0 for i in range(18)] + [0, 1, 0]  # 只有忙碌动作(19)可用
+
+        # 如果飞机准备进行下一步操作
+        res = [0 for eve in self.sites_state_global]  # 初始化站位动作可用性
+
         for i, eve in enumerate(self.sites_state_global):
-            if eve == -1:
+            if eve == -1:  # 该站位空闲
                 if len(self.planes[agent_id].left_job) != 0:
-                    # 判断该飞机下一个要完成的任务是否被包含在了资源列表中
+                    # 检查该飞机下一个任务是否能在该站位处理
                     if self.planes[agent_id].left_job[0].index_id in self.sites[i].resource_ids_list:
-                        res[i] = 1
-                else:  # 证明此时的这个飞机已经完成了所有的调度计划
-                    # return [0 for i in range(18)] + [1]  # 0
-                    return [0 for i in range(18)] + [0, 0, 1]
-        return res + [1, 0, 0]
+                        res[i] = 1  # 该站位动作可用
+                else:  # 该飞机已完成所有任务
+                    return [0 for i in range(18)] + [0, 0, 1]  # 只有完成动作(20)可用
+
+        return res + [1, 0, 0]  # 返回：[站位动作, 等待动作(18), 忙碌(19), 完成(20)]
 
     # state transition 1
     def has_chosen_action(self, action_id, agent_id):
@@ -352,10 +431,21 @@ class ScheduleEnv(gym.Env):
         return self.obs4marl[agent_id]
 
     def get_env_info(self):
+        """
+        获取环境的基本信息，用于配置MARL算法参数
+
+        Returns:
+            dict: 环境信息字典
+                - n_actions: 动作空间大小
+                - n_agents: 智能体数量
+                - state_shape: 全局状态维度
+                - obs_shape: 局部观测维度
+                - episode_limit: 单个episode的最大步数
+        """
         return {
-            "n_actions": len(self.sites) + 3,  # 还是得把空闲动作加上去
-            "n_agents": len(self.planes),
-            "state_shape": len(self.get_state()),
-            "obs_shape": len(self.get_obs()[0]),
-            "episode_limit": 80  # 注意，如果在80的长度内无法完成调度工作的话程序会报错，但是设置太大后面全是paddings
+            "n_actions": len(self.sites) + 3,  # 动作空间：站位动作 + 等待/忙碌/完成动作
+            "n_agents": len(self.planes),       # 智能体数量（飞机数量）
+            "state_shape": len(self.get_state()),     # 全局状态向量维度
+            "obs_shape": len(self.get_obs()[0]),      # 单个智能体观测维度
+            "episode_limit": 80  # episode最大长度，超过此长度未完成会报错
         }
