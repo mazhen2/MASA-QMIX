@@ -12,6 +12,7 @@ from MARL.agent.agent import Agents, CommAgents
 from MARL.common.replay_buffer import ReplayBuffer
 import matplotlib.pyplot as plt
 import sys
+import subprocess
 from MARL.common import plot_utils
 
 
@@ -146,6 +147,37 @@ class Runner:
             print("No scheduling records found to generate Gantt chart:", e)
         except Exception as e:
             print("Failed to generate Gantt chart:", e)
+        # additionally generate per-job gantt and other overview plots (best-effort, non-fatal)
+        try:
+            # per-job gantt (time_unit_minutes fixed to 5 per user's choice)
+            try:
+                out_gantt_job = plot_utils.generate_and_save_per_job_gantt(self.save_path, out_filename="gantt_per_job.png", time_unit_minutes=5)
+                print("Per-job Gantt chart saved to:", out_gantt_job)
+            except Exception as e:
+                print("Failed to generate per-job Gantt chart:", e)
+
+            # generate legends for gantt (jobs / agents) via script
+            try:
+                subprocess.run([sys.executable, os.path.join("scripts", "generate_gantt_legends.py")], check=False)
+            except Exception as e:
+                print("Failed to run gantt legend generator script:", e)
+
+            # generate training stability overview (uses accumulated_rewards or npy if present)
+            try:
+                subprocess.run([sys.executable, os.path.join("scripts", "generate_training_stability.py")], check=False)
+            except Exception as e:
+                print("Failed to run training stability script:", e)
+
+            # generate/update cross-algorithm completion time comparison (boxplot)
+            try:
+                subprocess.run([sys.executable, os.path.join("scripts", "generate_alg_comparison.py"),
+                                "--map", self.args.map, "--time_unit", "5", "--outdir", "result"], check=False)
+            except Exception as e:
+                print("Failed to run alg comparison script:", e)
+
+        except Exception:
+            # protect overall flow; these are best-effort only
+            pass
     def evaluate(self):
         """
         评估当前模型的性能
